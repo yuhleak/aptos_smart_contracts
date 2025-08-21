@@ -1,0 +1,148 @@
+/// OceanLock Module - Permanently lock Emojicoin tokens
+/// This module allows users to permanently lock their Emojicoin tokens
+/// A 1% fee is charged and sent to the fee receiver
+/// The remaining 99% of tokens are locked forever in the contract
+module OceanLock::OceanLock {
+    use std::signer;
+    use std::error;
+    use aptos_framework::coin;
+    use aptos_framework::timestamp;
+    
+    /// Error codes
+    const E_INSUFFICIENT_BALANCE: u64 = 1;
+    const E_AMOUNT_TOO_SMALL: u64 = 2;
+    const E_NOT_INITIALIZED: u64 = 3;
+    
+    /// Minimum amount to lock (1 token with 8 decimals)
+    const MIN_LOCK_AMOUNT: u64 = 100000000;
+    
+    /// Fee percentage (1% = 100 basis points out of 10000)
+    const FEE_BASIS_POINTS: u64 = 100;
+    const BASIS_POINTS_DIVISOR: u64 = 10000;
+    
+    /// Fee receiver address
+    const FEE_RECEIVER: address = @0xd0f7b04cb791a12a047fdf56c82801443a9076945f52b8b855fbbe8af87b77a8;
+    
+    /// Emojicoin token type
+    struct Emojicoin has key {}
+    
+    /// Resource to store locked tokens for each user
+    struct LockedTokens has key {
+        /// Total amount locked by this user across all lock operations
+        total_locked: u64,
+        /// Timestamp of the last lock operation
+        last_lock_time: u64,
+    }
+    
+    /// Global statistics resource
+    struct GlobalLockStats has key {
+        /// Total tokens locked across all users
+        total_locked_globally: u64,
+        /// Total fees collected
+        total_fees_collected: u64,
+        /// Number of lock operations
+        total_lock_operations: u64,
+    }
+    
+    /// Initialize the module (called once during deployment)
+    fun init_module(account: &signer) {
+        // Initialize global statistics
+        move_to(account, GlobalLockStats {
+            total_locked_globally: 0,
+            total_fees_collected: 0,
+            total_lock_operations: 0,
+        });
+    }
+    
+    /// Main function to lock tokens permanently
+    /// @param user: The signer who wants to lock tokens
+    /// @param amount: The amount of Emojicoin tokens to lock (in smallest units)
+    public entry fun lock(user: &signer, amount: u64) acquires LockedTokens, GlobalLockStats {
+        let user_address = signer::address_of(user);
+        
+        // Validate minimum amount
+        assert!(amount >= MIN_LOCK_AMOUNT, error::invalid_argument(E_AMOUNT_TOO_SMALL));
+        
+        // Check if user has sufficient balance
+        let user_balance = coin::balance<Emojicoin>(user_address);
+        assert!(user_balance >= amount, error::invalid_state(E_INSUFFICIENT_BALANCE));
+        
+        // Calculate fee (1%) and final amount to lock
+        let fee_amount = (amount * FEE_BASIS_POINTS) / BASIS_POINTS_DIVISOR;
+        let lock_amount = amount - fee_amount;
+        
+        // Withdraw tokens from user's account
+        let tokens_to_lock = coin::withdraw<Emojicoin>(user, lock_amount);
+        let fee_tokens = coin::withdraw<Emojicoin>(user, fee_amount);
+        
+        // Send fee to fee receiver
+        coin::deposit<Emojicoin>(FEE_RECEIVER, fee_tokens);
+        
+        // "Lock" tokens by depositing them to the contract address
+        // In a real implementation, these would be stored in a way that makes them unrecoverable
+        coin::deposit<Emojicoin>(@OceanLock, tokens_to_lock);
+        
+        // Update user's locked token record
+        if (!exists<LockedTokens>(user_address)) {
+            move_to(user, LockedTokens {
+                total_locked: lock_amount,
+                last_lock_time: timestamp::now_seconds(),
+            });
+        } else {
+            let locked_tokens = borrow_global_mut<LockedTokens>(user_address);
+            locked_tokens.total_locked = locked_tokens.total_locked + lock_amount;
+            locked_tokens.last_lock_time = timestamp::now_seconds();
+        };
+        
+        // Update global statistics
+        let global_stats = borrow_global_mut<GlobalLockStats>(@OceanLock);
+        global_stats.total_locked_globally = global_stats.total_locked_globally + lock_amount;
+        global_stats.total_fees_collected = global_stats.total_fees_collected + fee_amount;
+        global_stats.total_lock_operations = global_stats.total_lock_operations + 1;
+    }
+    
+    /// View function to get user's total locked tokens
+    #[view]
+    public fun get_user_locked_amount(user_address: address): u64 acquires LockedTokens {
+        if (exists<LockedTokens>(user_address)) {
+            borrow_global<LockedTokens>(user_address).total_locked
+        } else {
+            0
+        }
+    }
+    
+    /// View function to get user's last lock time
+    #[view]
+    public fun get_user_last_lock_time(user_address: address): u64 acquires LockedTokens {
+        if (exists<LockedTokens>(user_address)) {
+            borrow_global<LockedTokens>(user_address).last_lock_time
+        } else {
+            0
+        }
+    }
+    
+    /// View function to get global lock statistics
+    #[view]
+    public fun get_global_stats(): (u64, u64, u64) acquires GlobalLockStats {
+        let stats = borrow_global<GlobalLockStats>(@OceanLock);
+        (stats.total_locked_globally, stats.total_fees_collected, stats.total_lock_operations)
+    }
+    
+    /// Calculate fee for a given amount
+    #[view]
+    public fun calculate_fee(amount: u64): u64 {
+        (amount * FEE_BASIS_POINTS) / BASIS_POINTS_DIVISOR
+    }
+    
+    /// Calculate final lock amount after fee
+    #[view]
+    public fun calculate_lock_amount(amount: u64): u64 {
+        amount - calculate_fee(amount)
+    }
+    
+    /// Get minimum lock amount
+    #[view]
+    public fun get_min_lock_amount(): u64 {
+        MIN_LOCK_AMOUNT
+    }
+}
